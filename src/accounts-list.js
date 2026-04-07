@@ -1,161 +1,236 @@
 import 'babel-polyfill';
 import './style.scss';
 import { el } from 'redom';
-import { format } from 'date-fns';
 import { createAccount, getAccounts } from './Api';
+import { getToken, handleAuthError } from './auth';
+import {
+  createBadge,
+  createEmptyState,
+  createLoader,
+  createMetricRow,
+  createPageHeader,
+  createSectionCard,
+  createStatus,
+  formatMoney,
+  getLastTransactionLabel,
+  getLatestTransaction,
+  hideStatus,
+  setLoading,
+  showStatus,
+} from './ui';
 
 export default function accountsList(router) {
+  const token = getToken();
+  const accounts = [];
+  const spin = createLoader('accounts-loader');
+  const status = createStatus({ className: 'page-status' });
+  const metricsWrap = el('div.accounts-summary');
+  const list = el('div.account-cards');
+  const sort = el('select.select-control', [
+    el('option', { value: 'recent', selected: true }, 'По последней активности'),
+    el('option', { value: 'balance' }, 'По балансу'),
+    el('option', { value: 'number' }, 'По номеру счета'),
+  ]);
 
-  const spin = el('div.text-center', { id: 'spin', style: 'display: none!important;' }, [
-    el('span.loader', 'QQ')
-  ])
+  function sortAccounts(list, sortValue) {
+    const nextAccounts = [...list];
 
-  class BankAccount {
-    constructor(accountNumber, balance, date, container) {
-      this.accountNumber = accountNumber;
-      this.balance = balance;
-      this.date = date
-      container.append(
-        el('li.acc-item',
-          el('div', {style: 'width: 240px;'}, [
-            el('h2.acc-num', this.accountNumber),
-            el('div.acc-balance', new Intl.NumberFormat().format(this.balance).replaceAll(',', '.') + ' ₽'),
-            el('div.acc-lst-trns', 'Последняя транзакция:', el('span.lst-trns-date', ` ${date}`)),
-          ]),
-          el('button.btn.blue.acc-open-btn', {
-            href: `/accounts-list/${this.accountNumber}`,
-            onclick(event) {
-              router.navigate(event.target.getAttribute('href'));
-              location.reload();
+    if (sortValue === 'number') {
+      nextAccounts.sort((a, b) => a.account.localeCompare(b.account));
+    } else if (sortValue === 'balance') {
+      nextAccounts.sort((a, b) => Number(b.balance) - Number(a.balance));
+    } else {
+      nextAccounts.sort((a, b) => {
+        const firstDate = getLatestTransaction(a)?.date || '';
+        const secondDate = getLatestTransaction(b)?.date || '';
+        return secondDate.localeCompare(firstDate);
+      });
+    }
+
+    return nextAccounts;
+  }
+
+  function createHeroMetric(label, value, meta) {
+    return el('div.hero-stat', [
+      el('div.hero-stat__label', label),
+      el('div.hero-stat__value', value),
+      el('div.hero-stat__meta', meta),
+    ]);
+  }
+
+  function updateSummary() {
+    const totalBalance = accounts.reduce((sum, account) => sum + Number(account.balance || 0), 0);
+    const activeAccounts = accounts.filter((account) => getLatestTransaction(account)?.date).length;
+
+    metricsWrap.replaceChildren(
+      createMetricRow({
+        label: 'Всего счетов',
+        value: String(accounts.length).padStart(2, '0'),
+        meta: 'Полный набор открытых счетов',
+      }),
+      createMetricRow({
+        label: 'Совокупный баланс',
+        value: formatMoney(totalBalance),
+        meta: 'Общая стоимость всех счетов',
+        tone: 'success',
+      }),
+      createMetricRow({
+        label: 'Активные счета',
+        value: String(activeAccounts),
+        meta: 'Со свежими операциями в истории',
+      })
+    );
+  }
+
+  function createAccountCard(account) {
+    return el('article.account-card', [
+      el('div.account-card__top', [
+        el('div.stack', [
+          el('div.account-card__number', account.account),
+          el('div.account-card__meta', 'Номер счета и доступный остаток'),
+        ]),
+        createBadge(
+          getLatestTransaction(account)?.date ? 'active' : 'new',
+          getLatestTransaction(account)?.date ? 'success' : 'info'
+        ),
+      ]),
+      el('div.stack', [
+        el('div.account-card__balance', formatMoney(account.balance)),
+        el('div.account-card__caption', `Последняя операция: ${getLastTransactionLabel(account)}`),
+      ]),
+      el('div.account-card__bottom', [
+        el('div.account-card__trend', `Транзакций: ${account.transactions?.length || 0}`),
+        el('div.account-card__actions', [
+          el('button.btn.btn-secondary', {
+            type: 'button',
+            onclick() {
+              router.navigate(`/accounts-list/${account.account}`);
             },
-          }, 'Открыть'),
-        )
+          }, 'Открыть счет'),
+        ]),
+      ]),
+    ]);
+  }
+
+  function renderAccounts() {
+    list.innerHTML = '';
+    hideStatus(status);
+    updateSummary();
+
+    const sortedAccounts = sortAccounts(accounts, sort.value);
+
+    if (!sortedAccounts.length) {
+      list.append(
+        createEmptyState({
+          title: 'Пока нет ни одного счета',
+          description: 'Создайте первый счет, чтобы увидеть баланс, историю операций и новые аналитические блоки.',
+        })
       );
+      return;
     }
+
+    sortedAccounts.forEach((account) => {
+      list.append(createAccountCard(account));
+    });
   }
 
-  const accSort = (arr) => {
-    for (let i = 0; i < arr.length; i++) {
-      for (let j = 0; j < arr.length - 1; j++) {
-        if (arr[j].account > arr[j + 1].account) {
-          [arr[j], arr[j + 1]] = [arr[j + 1], arr[j]];
-        }
+  async function loadAccounts({ showLoader = true } = {}) {
+    if (showLoader) {
+      setLoading(spin, true);
+    }
+
+    try {
+      const response = await getAccounts(token);
+      accounts.splice(0, accounts.length, ...response.payload);
+      renderAccounts();
+    } catch (error) {
+      list.innerHTML = '';
+
+      if (handleAuthError(router, error)) {
+        return;
       }
+
+      showStatus(status, error.message || 'Не удалось загрузить список счетов.', 'error');
+    } finally {
+      setLoading(spin, false);
     }
   }
-
-  const balanceSort = (arr) => {
-    for (let i = 0; i < arr.length; i++) {
-      for (let j = 0; j < arr.length - 1; j++) {
-        if (arr[j].balance > arr[j + 1].balance) {
-          [arr[j], arr[j + 1]] = [arr[j + 1], arr[j]];
-        }
-      }
-    }
-  }
-
-  const lstTransSort = (arr) => {
-    for (let i = 0; i < arr.length; i++) {
-      if (!arr[i].transactions[0]) {
-        arr[i].transactions[0] = '';
-      }
-    }
-    for (let i = 0; i < arr.length; i++) {
-      for (let j = 0; j < arr.length - 1; j++) {
-        if (arr[j].transactions[0].date > arr[j + 1].transactions[0].date) {
-          [arr[j], arr[j + 1]] = [arr[j + 1], arr[j]];
-        }
-      }
-    }
-  }
-
-  document.getElementById('accounts-head-button').disabled = true;
-
-  const list = el('ul.acc-list');
-  const title = el('div.h1', 'Ваши счета')
-  const sort = el('select.sort', [
-    el('option.sort-opt', {selected: true}, 'Сортировка'),
-    el('option.sort-opt', {value: 'num'}, 'По номеру'),
-    el('option.sort-opt', {value: 'bal'}, 'По балансу'),
-    el('option.sort-opt', {value: 'ltr'}, 'По последней транзакции')
-  ])
 
   sort.addEventListener('change', () => {
-    list.innerHTML = '';
-    spin.style.display = '';
-    getAccounts(token).then((res) => {
-      spin.style.display = 'none';
-      sortAcc(res.payload);
-    })
-  })
+    renderAccounts();
+  });
 
-  function sortAcc(arr) {
-    if (sort.value === 'num') {
-      accSort(arr);
-      tableBuild(arr);
-    } else if (sort.value === 'bal') {
-      balanceSort(arr);
-      tableBuild(arr);
-    } else if(sort.value === 'ltr') {
-      lstTransSort(arr);
-      tableBuild(arr);
-    } else {
-      tableBuild(arr);
-    }
-  }
-
-  function tableBuild(arr) {
-    for (let i = 0; i < arr.length; i++) {
-      if (arr[i].transactions.length === 1 && arr[i].transactions[0] !== '') {
-        let [trans] = arr[i].transactions;
-        let date = format(new Date(trans.date), 'd MMMM yyyy');
-        date = date.replace('January', 'января').replace('February', 'февраля').replace('March', 'марта').replace('April', 'апреля').replace('May', 'мая').replace('June', 'июня').replace('July', 'июля').replace('August', 'августа').replace('September', 'сентября').replace('October', 'октября').replace('November', 'ноября').replace('December', 'декабря');
-        new BankAccount(arr[i].account, arr[i].balance, date, list);
-      } else {
-        new BankAccount(arr[i].account, arr[i].balance, 'Нет операций', list);
-      }
-    }
-  }
-
-  async function reNewAcc(res) {
-    if (res.payload.length > 1) {
-      let arr = res.payload;
-      sortAcc(arr);
-    } else {
-      let [destrAcc] = res.payload;
-      let [trans] = destrAcc.transactions;
-      let date = format(new Date(trans.date), 'd MMMM yyyy');
-      date = date.replace('January', 'января').replace('February', 'февраля').replace('March', 'марта').replace('April', 'апреля').replace('May', 'мая').replace('June', 'июня').replace('July', 'июля').replace('August', 'августа').replace('September', 'сентября').replace('October', 'октября').replace('November', 'ноября').replace('December', 'декабря');
-      new BankAccount(destrAcc.account, destrAcc.balance, date, list);
-    }
-  }
-
-  let token = localStorage.getItem('token');
-
-  spin.style.display = '';
-  getAccounts(token).then((res) => {
-    spin.style.display = 'none';
-    reNewAcc(res);
-  })
-
-  const newAccountButton = el('button.btn.blue.add', {
+  const newAccountButton = el('button.btn.btn-primary', {
+    type: 'button',
     async onclick(event) {
       event.preventDefault();
-      list.innerHTML = '';
-      spin.style.display = '';
-      await createAccount(token);
-      getAccounts(token).then((res) => {
-        spin.style.display = 'none';
-        reNewAcc(res);
-      })
-    },
-  }, 'Создать новый счет');
+      newAccountButton.disabled = true;
+      hideStatus(status);
 
-  return [
-    title,
-    sort,
-    newAccountButton,
-    list,
-    spin
-  ]
+      try {
+        await createAccount(token);
+        await loadAccounts();
+      } catch (error) {
+        if (handleAuthError(router, error)) {
+          return;
+        }
+
+        showStatus(status, error.message || 'Не удалось создать новый счет.', 'error');
+      } finally {
+        newAccountButton.disabled = false;
+      }
+    },
+  }, 'Открыть новый счет');
+
+  const pageHeader = createPageHeader({
+    eyebrow: 'Accounts overview',
+    title: 'Ваши счета',
+    description: 'Рабочая зона для управления балансами, открытия новых счетов и быстрого перехода к аналитике по каждой карточке.',
+    actions: [newAccountButton],
+    meta: [
+      createHeroMetric('Portfolio balance', 'Live', 'Баланс и активность обновляются после каждого запроса'),
+      createHeroMetric('Routing', 'Fast', 'Переходите к переводам и истории за один клик'),
+    ],
+  });
+
+  const summaryCard = createSectionCard({
+    eyebrow: 'Portfolio health',
+    title: 'Ключевые показатели',
+    description: 'Снимок текущего состояния счетов и активности.',
+    className: 'span-8',
+    content: metricsWrap,
+  });
+
+  const controlsCard = createSectionCard({
+    eyebrow: 'List controls',
+    title: 'Сортировка и действия',
+    description: 'Меняйте порядок счетов и создавайте новые без перехода на отдельный экран.',
+    className: 'span-4',
+    content: [
+      el('div.stack', [
+        el('div.surface-note', 'Сортировка перестраивает сетку без повторного запроса к API.'),
+        sort,
+      ]),
+      status,
+    ],
+  });
+
+  const accountsCard = createSectionCard({
+    eyebrow: 'Account registry',
+    title: 'Каталог счетов',
+    description: 'Карточки сгруппированы в responsive-сетку с акцентом на баланс и последнюю активность.',
+    className: 'span-12',
+    content: [spin, list],
+  });
+
+  const screen = el('div.accounts-grid', [
+    el('div.span-12', pageHeader),
+    summaryCard,
+    controlsCard,
+    accountsCard,
+  ]);
+
+  loadAccounts();
+
+  return [screen];
 }

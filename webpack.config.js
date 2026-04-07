@@ -38,7 +38,8 @@ module.exports = (env) => ({
   },
   plugins: [
     new HtmlWebpackPlugin({
-      title: 'Форма оплаты'
+      title: 'Coin. Premium Banking',
+      template: './index.html',
     }),
     new MiniCssExtractPlugin({
       filename: 'style.[contenthash].css'

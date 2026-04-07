@@ -1,44 +1,62 @@
 import 'babel-polyfill';
 import './style.scss';
 import { el } from 'redom';
+import { clearToken } from './auth';
 
+function createNavButton({ id, label, href, router, isActive = false }) {
+  return el('button.nav-link', {
+    id,
+    type: 'button',
+    className: `nav-link${isActive ? ' is-active' : ''}`,
+    onclick(event) {
+      router.navigate(event.currentTarget.dataset.href);
+    },
+    'data-href': href,
+  }, label);
+}
 
-export default function header(router) {
-  return [
-    el('header', { class: 'page-header' }, [
-      el('h1.logo', 'Coin.'),
-      el('button.btn.white', {
-        href: `/map/`,
-        id: 'map-head-button',
-        onclick(event) {
-          router.navigate(event.target.getAttribute('href'));
-          //location.reload();
-        },
-      }, 'Банкоматы'),
-      el('button.btn.white', {
-        href: `/exchange/`,
-        id: 'exchange-head-button',
-        onclick(event) {
-          router.navigate(event.target.getAttribute('href'));
-          location.reload();
-        },
-      }, 'Валюта'),
-      el('button.btn.white', {
-        href: `/accounts-list/`,
-        id: 'accounts-head-button',
-        onclick(event) {
-          router.navigate(event.target.getAttribute('href'));
-          //location.reload();
-        },
-      }, 'Счета'),
-      el('button.btn.white', {
-        href: `/`,
-        onclick(event) {
-          localStorage.setItem('token', '');
-          router.navigate(event.target.getAttribute('href'));
-          //location.reload();
-        },
-      }, 'Выйти')
-    ])
-  ]
+export default function header(router, currentRoute = '/accounts-list/') {
+  return el('header.page-header', [
+    el('div.page-header__inner', [
+      el('div.brand', [
+        el('div.brand__mark', 'C.'),
+        el('div.brand__copy', [
+          el('div.brand__title', 'Coin.'),
+          el('div.brand__subtitle', 'premium banking'),
+        ]),
+      ]),
+      el('nav.page-header__nav', [
+        createNavButton({
+          id: 'accounts-head-button',
+          label: 'Счета',
+          href: '/accounts-list/',
+          router,
+          isActive: currentRoute.startsWith('/accounts-list/'),
+        }),
+        createNavButton({
+          id: 'exchange-head-button',
+          label: 'Валюта',
+          href: '/exchange/',
+          router,
+          isActive: currentRoute.startsWith('/exchange/'),
+        }),
+        createNavButton({
+          id: 'map-head-button',
+          label: 'Банкоматы',
+          href: '/map/',
+          router,
+          isActive: currentRoute.startsWith('/map/'),
+        }),
+      ]),
+      el('div.page-header__actions', [
+        el('button.btn.btn-ghost', {
+          type: 'button',
+          onclick() {
+            clearToken();
+            router.navigate('/');
+          },
+        }, 'Выйти'),
+      ]),
+    ]),
+  ]);
 }

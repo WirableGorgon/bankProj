@@ -2,229 +2,120 @@ import 'babel-polyfill';
 import './style.scss';
 import { el } from 'redom';
 import { Chart } from 'chart.js/auto';
-import { format } from 'date-fns';
 import { getAccount } from './Api';
+import { getToken, handleAuthError } from './auth';
+import {
+  createLoader,
+  createPageHeader,
+  createSectionCard,
+  createStatus,
+  formatMoney,
+  formatShortDate,
+  getLatestTransaction,
+  setLoading,
+  showStatus,
+} from './ui';
 
-let token = localStorage.getItem('token');
+const MONTH_NAMES = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+const PAGE_SIZE = 25;
+const CHART_MONTHS = 12;
 
-const monthForStat = 25;
-
-function monthArrayForStat(res, month, lastTrans, lastTransMonth, monthArray, numDateArray) {
-  let check = lastTransMonth;
-  for (let i = 1; i < 12; i++) {
-    for (let j = 1; j < res.payload.transactions.length + 1; j++) {
-      const lastTr = res.payload.transactions[res.payload.transactions.length - j];
-      const lastTransMn = new Date(lastTr.date).getMonth();
-      if (lastTransMn == lastTransMonth - i) {
-        if (lastTransMn == check - 1 || lastTransMn == check + 11) {
-          monthArray.unshift(month[lastTransMn]);
-          numDateArray.unshift({month: lastTransMn, year: new Date(lastTrans.date).getFullYear()});
-          check = lastTransMn;
-          break;
-        } else if (check > 0) {
-          check--;
-          monthArray.unshift(month[check]);
-          numDateArray.unshift({month: check, year: new Date(lastTrans.date).getFullYear()});
-          check = lastTransMn;
-          monthArray.unshift(month[lastTransMn]);
-          numDateArray.unshift({month: lastTransMn, year: new Date(lastTrans.date).getFullYear()});
-          break;
-        } else {
-          check = check + 11;
-          monthArray.unshift(month[check]);
-          numDateArray.unshift({month: check, year: new Date(lastTrans.date).getFullYear()});
-          check = lastTransMn;
-          monthArray.unshift(month[lastTransMn]);
-          numDateArray.unshift({month: lastTransMn, year: new Date(lastTrans.date).getFullYear()});
-          break;
-        }
-      } else if (lastTransMn == lastTransMonth + 12 - i) {
-        if (lastTransMn == check - 1 || lastTransMn == check + 11) {
-          monthArray.unshift(month[lastTransMn]);
-          numDateArray.unshift({month: lastTransMn, year: new Date(lastTrans.date).getFullYear() - 1});
-          check = lastTransMn;
-          break;
-        } else if (check > 0) {
-          check--;
-          monthArray.unshift(month[check]);
-          numDateArray.unshift({month: check, year: new Date(lastTrans.date).getFullYear() - 1});
-          check = lastTransMn;
-          monthArray.unshift(month[lastTransMn]);
-          numDateArray.unshift({month: lastTransMn, year: new Date(lastTrans.date).getFullYear() - 1});
-          break;
-        } else {
-          check = check + 11
-          monthArray.unshift(month[check]);
-          numDateArray.unshift({month: check, year: new Date(lastTrans.date).getFullYear()});
-          check = lastTransMn;
-          monthArray.unshift(month[lastTransMn]);
-          numDateArray.unshift({month: lastTransMn, year: new Date(lastTrans.date).getFullYear() - 1});
-          break;
-        }
-      }
-    }
-  }
+function endOfMonth(date) {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
 }
 
-function amountArrayForStat(res, transTo, transFrom, balanceArray, numDateArray) {
-  let bal = res.payload.balance;
-  balanceArray.push(bal);
-  for (let i = numDateArray.length - 1; i > -1; i--) {
-    let inside = 0;
-    let outside = 0;
-    for (let j = res.payload.transactions.length - 1; j > -1; j--) {
-      if (new Date(res.payload.transactions[j].date).getFullYear() == numDateArray[i].year && new Date(res.payload.transactions[j].date).getMonth() == numDateArray[i].month) {
-        if (res.payload.transactions[j].to == res.payload.account) {
-          bal = bal - res.payload.transactions[j].amount;
-          inside = inside + res.payload.transactions[j].amount;
-        } else {
-          bal = bal + res.payload.transactions[j].amount;
-          outside = outside + res.payload.transactions[j].amount;
-        }
-      }
-    }
-    transTo.unshift(inside);
-    transFrom.unshift(outside);
-    balanceArray.unshift(bal);
+function buildMonthBuckets(anchorDate, length) {
+  const buckets = [];
+
+  for (let index = length - 1; index >= 0; index--) {
+    const currentDate = new Date(anchorDate.getFullYear(), anchorDate.getMonth() - index, 1);
+    buckets.push({
+      key: `${currentDate.getFullYear()}-${currentDate.getMonth()}`,
+      label: MONTH_NAMES[currentDate.getMonth()],
+      end: endOfMonth(currentDate),
+    });
   }
-  balanceArray.shift();
+
+  return buckets;
 }
 
-export default async function accountHistory(accountNumber, router) {
+function calculateBalanceAtDate(account, targetDate) {
+  let balance = Number(account.balance) || 0;
 
-  const spin = el('div.text-center', { id: 'spin'}, [
-    el('span.loader', 'QQ')
-  ])
+  account.transactions.forEach((transaction) => {
+    const transactionDate = new Date(transaction.date);
 
-  async function accBuild() {
-    spin.style.display = '';
-    const res = await getAccount(accountNumber, token);
-    spin.style.display = 'none';
-    number.textContent = '№ '+ res.payload.account;
-    balance.textContent = new Intl.NumberFormat().format(res.payload.balance).replaceAll(',', '.') + ' ₽';
-  }
+    if (transactionDate > targetDate) {
+      if (transaction.to === account.account) {
+        balance -= Number(transaction.amount);
+      } else {
+        balance += Number(transaction.amount);
+      }
+    }
+  });
 
-  accBuild();
+  return Number(balance.toFixed(2));
+}
 
-  const blockHead = el('table.acc-det-hd');
-  const leftcol = el('tr.left-col');
-  const rightcol = el('tr.right-col');
-  const title = el('td.h1.acc-det-h1', 'История баланса');
-  const number = el('td.acc-det-num');
-  const backBut = el('td.acc-det-back', el('button.btn.blue.go-back', {
-      href: `/accounts-list/${accountNumber}`,
-      onclick(event) {
-        router.navigate(event.target.getAttribute('href'));
-      },
-    }, 'Вернуться назад')
-  );
-  const balanceBlock = el('td.acc-det-bal-block', 'Баланс ')
-  const balance = el('div.acc-det-bal');
-  const mainDiv = el('div');
-  const mainBlock = el('div.acc-det-mb');
-  const balanceDyn = el('div.inf-block.acc-his-dyn', 'Динамика баланса');
-  const transDyn = el('div.inf-block.acc-his-dyn', 'Соотношение входящих исходящих транзакций');
-  const transHist = el('div.grey-inf-block.acc-det-his', {id: 'block-of-list'},
-   'История переводов', el('table.list-last-trans', {id: 'lits-of-lt'}, [
-      el('tr.table-head', [
-        el('th.th-col.first-col', 'Счет отправителя'),
-        el('th.th-col', 'Счет получателя'),
-        el('th.th-col', 'Сумма'),
-        el('th.th-col.last-col.short', 'Дата'),
-      ])
+function buildHistoryStats(account) {
+  const anchorTransaction = account.transactions[account.transactions.length - 1];
+  const anchorDate = anchorTransaction ? new Date(anchorTransaction.date) : new Date();
+  const buckets = buildMonthBuckets(anchorDate, CHART_MONTHS);
+  const bucketMap = new Map(
+    buckets.map((bucket) => [
+      bucket.key,
+      { incoming: 0, outgoing: 0, end: bucket.end },
     ])
   );
 
-  const month = [
-    'янв',
-    'фев',
-    'мар',
-    'апр',
-    'май',
-    'июн',
-    'июл',
-    'авг',
-    'сен',
-    'окт',
-    'ноя',
-    'дек'
-  ]
+  account.transactions.forEach((transaction) => {
+    const transactionDate = new Date(transaction.date);
+    const key = `${transactionDate.getFullYear()}-${transactionDate.getMonth()}`;
+    const bucket = bucketMap.get(key);
 
-  const monthArray = [];
-  const numDateArray = [];
-  const balanceArray = [];
-  const transTo = [];
-  const transFrom = [];
-
-  getAccount(accountNumber, token).then((res) => {
-
-    if (res.payload.transactions.length) {
-
-      const lastTrans = res.payload.transactions[res.payload.transactions.length - 1];
-      const lastTransMonth = new Date(lastTrans.date).getMonth();
-      monthArray.unshift(month[lastTransMonth]);
-      numDateArray.unshift({month: lastTransMonth, year: new Date(lastTrans.date).getFullYear()});
-
-      monthArrayForStat(res, month, lastTrans, lastTransMonth, monthArray, numDateArray);
-
-      amountArrayForStat(res, transTo, transFrom, balanceArray, numDateArray);
-
-      ch.update();
-      tr.update();
+    if (!bucket) {
+      return;
     }
 
-    let length = 25;
-    let firstEl = 1;
-
-    if (res.payload.transactions.length < monthForStat) {
-      length = res.payload.transactions.length;
+    if (transaction.to === account.account) {
+      bucket.incoming += Number(transaction.amount);
+    } else {
+      bucket.outgoing += Number(transaction.amount);
     }
+  });
 
-    function addLastTrans(start, amount) {
-      for (let i = start; i < amount + 1; i++) {
-        let trans = res.payload.transactions[res.payload.transactions.length - i];
-        const str = el('tr.table-line');
-        const sendAcc = el('td.first-col');
-        sendAcc.textContent = trans.from;
-        const resAcc = el('td');
-        resAcc.textContent = trans.to;
-        const sumSend = el('td');
-        if (trans.to == res.payload.account) {
-          sumSend.textContent = '+' + trans.amount + ' ₽';
-          sumSend.style = 'color: #76CA66'
-        } else {
-          sumSend.textContent = '-' + trans.amount + ' ₽';
-          sumSend.style = 'color: #FD4E5D'
-        }
-        const dateSend = el('td');
-        dateSend.textContent = format(new Date(trans.date), 'dd.MM.yyyy');
+  return {
+    labels: buckets.map((bucket) => bucket.label),
+    balances: buckets.map((bucket) => calculateBalanceAtDate(account, bucket.end)),
+    incoming: buckets.map((bucket) => Number(bucketMap.get(bucket.key).incoming.toFixed(2))),
+    outgoing: buckets.map((bucket) => Number(bucketMap.get(bucket.key).outgoing.toFixed(2))),
+  };
+}
 
-        str.append(sendAcc, resAcc, sumSend, dateSend);
-        document.getElementById('lits-of-lt').append(str);
-      }
-    }
+function createHeroMetric(label) {
+  const valueNode = el('div.hero-stat__value', '...');
+  const metaNode = el('div.hero-stat__meta', '');
 
-    addLastTrans(firstEl, length);
+  return {
+    node: el('div.hero-stat', [
+      el('div.hero-stat__label', label),
+      valueNode,
+      metaNode,
+    ]),
+    set(value, meta = '') {
+      valueNode.textContent = value;
+      metaNode.textContent = meta;
+    },
+  };
+}
 
-    if (res.payload.transactions.length > length) {
-      const addTrans = el('button.btn.blue.more', 'Больше операций');
-      addTrans.addEventListener('click', () => {
-
-        if (res.payload.transactions.length < length + monthForStat) {
-          length = res.payload.transactions.length;
-        } else {
-          length = length + monthForStat;
-          firstEl = firstEl + monthForStat;
-        }
-
-        addLastTrans(firstEl, length)
-      })
-      document.getElementById('block-of-list').append(addTrans);
-    }
-  })
-
-  var balanceStat = el('canvas.popChart', { id: 'balance-stat' });
-  let ch = new Chart(balanceStat, {
+function createChart(canvas, datasets, stacked = false) {
+  return new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: [],
+      datasets,
+    },
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -233,145 +124,267 @@ export default async function accountHistory(accountNumber, router) {
           beginAtZero: true,
           bounds: 'data',
           position: 'right',
+          stacked,
           grid: {
-            display: false
+            color: 'rgba(148, 163, 184, 0.12)',
+            drawBorder: false,
           },
           ticks: {
-            color: 'black',
+            color: '#9fb0c9',
             font: {
-              size: '20'
+              size: 12,
             },
-            callback: (value, index, values) =>
-              index > 0 && index < values.length - 1 ? '' : Math[index ? 'max' : 'min'](...values.map(n => n.value)),
-          }
+          },
         },
         x: {
+          stacked,
           grid: {
-            display: false
+            display: false,
           },
           ticks: {
-            color: 'black',
+            color: '#9fb0c9',
             font: {
-              size: '20'
-            }
-          }
+              size: 12,
+            },
+          },
         },
       },
       plugins: {
         legend: {
-          display: false,
-        }
-      }
-    },
-    plugins: [
-      {
-        beforeDraw(chart, args, options) {
-          const {ctx, chartArea: {left, top, width, height}} = chart;
-          ctx.save();
-          ctx.strokeStyle = options.borderColor;
-          ctx.lineWidth = 1;
-          ctx.setLineDash(options.borderDash || []);
-          ctx.lineDashOffset = options.borderDashOffset;
-          ctx.strokeRect(left, top, width, height);
-          ctx.restore();
-        }
-      }
-    ],
-    type: 'bar',
-    data: {
-      labels: monthArray,
-      datasets: [{
-        data: balanceArray,
-        backgroundColor: [
-          '#116ACC'
-        ],
-      }]
-    },
-  })
-
-  var transStat = el('canvas.popChart', { id: 'trans-stat' });
-  let tr = new Chart(transStat, {
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        y: {
-          beginAtZero: true,
-          bounds: 'data',
-          position: 'right',
-          grid: {
-            display: false
+          display: stacked,
+          labels: {
+            color: '#9fb0c9',
+            boxWidth: 10,
           },
-          ticks: {
-            color: 'black',
-            font: {
-              size: '20'
-            },
-            callback: (value, index, values) =>
-              index > 0 && index < values.length - 1 ? '' : Math[index ? 'max' : 'min'](...values.map(n => n.value)),
-          }
-        },
-        x: {
-          stacked: true,
-          grid: {
-            display: false
-          },
-          ticks: {
-            color: 'black',
-            font: {
-              size: '20'
-            }
-          }
         },
       },
-      plugins: {
-        legend: {
-          display: false,
-        }
-      }
     },
-    plugins: [
+  });
+}
+
+function buildTransactionsTable(table, account, visibleCount) {
+  table.innerHTML = '';
+  const head = el('thead', [
+    el('tr', [
+      el('th', 'Счет отправителя'),
+      el('th', 'Счет получателя'),
+      el('th', 'Сумма'),
+      el('th', 'Дата'),
+    ]),
+  ]);
+  const body = el('tbody');
+
+  const transactions = [...account.transactions].slice(-visibleCount).reverse();
+
+  if (!transactions.length) {
+    body.append(
+      el('tr', [
+        el('td', { colspan: 4 }, 'По счету пока нет операций.'),
+      ])
+    );
+    table.append(head, body);
+    return;
+  }
+
+  transactions.forEach((transaction) => {
+    body.append(
+      el('tr', [
+        el('td', transaction.from),
+        el('td', transaction.to),
+        el(
+          `td.table-amount.${transaction.to === account.account ? 'table-amount--in' : 'table-amount--out'}`,
+          `${transaction.to === account.account ? '+' : '-'}${formatMoney(transaction.amount)}`
+        ),
+        el('td', formatShortDate(transaction.date)),
+      ])
+    );
+  });
+
+  table.append(head, body);
+}
+
+export default async function accountHistory(accountNumber, router) {
+  const token = getToken();
+  let account = null;
+  let visibleTransactions = PAGE_SIZE;
+
+  const spin = createLoader('account-history-loader');
+  const pageStatus = createStatus({ className: 'page-status' });
+  const titleNode = el('span', 'История счета');
+  const descriptionNode = el('span', 'Загружаем годовую динамику баланса и историю операций.');
+  const balanceMetric = createHeroMetric('Balance now');
+  const activityMetric = createHeroMetric('Latest transaction');
+  const flowMetric = createHeroMetric('Net flow');
+  const historyTable = el('table.data-table');
+  const moreButton = el('button.btn.btn-secondary', {
+    type: 'button',
+    onclick() {
+      visibleTransactions += PAGE_SIZE;
+      renderTransactions();
+    },
+  }, 'Больше операций');
+  const balanceCanvas = el('canvas');
+  const transCanvas = el('canvas');
+  const balanceChart = createChart(
+    balanceCanvas,
+    [{ data: [], backgroundColor: '#5fa8ff', borderRadius: 10, maxBarThickness: 32 }],
+    false
+  );
+  const transactionChart = createChart(
+    transCanvas,
+    [
       {
-        beforeDraw(chart, args, options) {
-          const {ctx, chartArea: {left, top, width, height}} = chart;
-          ctx.save();
-          ctx.strokeStyle = options.borderColor;
-          ctx.lineWidth = 1;
-          ctx.setLineDash(options.borderDash || []);
-          ctx.lineDashOffset = options.borderDashOffset;
-          ctx.strokeRect(left, top, width, height);
-          ctx.restore();
-        }
-      }
+        label: 'Исходящие',
+        data: [],
+        backgroundColor: '#ff6f7f',
+        borderRadius: 10,
+        maxBarThickness: 32,
+      },
+      {
+        label: 'Входящие',
+        data: [],
+        backgroundColor: '#46d39a',
+        borderRadius: 10,
+        maxBarThickness: 32,
+      },
     ],
-    type: 'bar',
-    data: {
-      labels: monthArray,
-      datasets: [{
-        data: transFrom,
-        backgroundColor: [
-          '#FD4E5D'
-        ],
-      },{
-        data: transTo,
-        backgroundColor: [
-          '#76CA66'
-        ],
-      }]
+    true
+  );
+
+  const pageHeader = createPageHeader({
+    eyebrow: 'Account analytics',
+    title: titleNode,
+    description: descriptionNode,
+    breadcrumbs: ['Accounts', 'History'],
+    actions: [
+      el('button.btn.btn-ghost', {
+        type: 'button',
+        onclick() {
+          router.navigate(`/accounts-list/${accountNumber}`);
+        },
+      }, 'К деталям счета'),
+      el('button.btn.btn-secondary', {
+        type: 'button',
+        onclick() {
+          router.navigate('/accounts-list/');
+        },
+      }, 'Все счета'),
+    ],
+    meta: [balanceMetric.node, activityMetric.node, flowMetric.node],
+  });
+
+  function renderTransactions() {
+    if (!account) {
+      return;
+    }
+
+    buildTransactionsTable(historyTable, account, visibleTransactions);
+
+    if (account.transactions.length > visibleTransactions) {
+      moreButton.hidden = false;
+      return;
+    }
+
+    moreButton.hidden = true;
+  }
+
+  function renderHistory() {
+    if (!account) {
+      return;
+    }
+
+    const latestTransaction = getLatestTransaction(account);
+    const incoming = (account.transactions || [])
+      .filter((transaction) => transaction.to === account.account)
+      .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+    const outgoing = (account.transactions || [])
+      .filter((transaction) => transaction.from === account.account)
+      .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+
+    titleNode.textContent = `История счета ${account.account}`;
+    descriptionNode.textContent = 'Годовая аналитика по балансу и потокам средств с расширяемой таблицей операций.';
+    balanceMetric.set(formatMoney(account.balance), 'Текущий остаток счета');
+    activityMetric.set(
+      latestTransaction?.date ? formatShortDate(latestTransaction.date) : 'Нет данных',
+      latestTransaction?.date ? 'Дата последней операции' : 'Счет пока без истории'
+    );
+    flowMetric.set(formatMoney(incoming - outgoing), 'Чистый денежный поток за весь период');
+
+    const historyStats = buildHistoryStats(account);
+
+    balanceChart.data.labels = historyStats.labels;
+    balanceChart.data.datasets[0].data = historyStats.balances;
+    balanceChart.update();
+
+    transactionChart.data.labels = historyStats.labels;
+    transactionChart.data.datasets[0].data = historyStats.outgoing;
+    transactionChart.data.datasets[1].data = historyStats.incoming;
+    transactionChart.update();
+
+    renderTransactions();
+  }
+
+  async function loadHistory({ showLoader = true } = {}) {
+    if (showLoader) {
+      setLoading(spin, true);
+    }
+
+    try {
+      const response = await getAccount(accountNumber, token);
+      account = response.payload;
+      renderHistory();
+    } catch (error) {
+      if (handleAuthError(router, error)) {
+        return;
+      }
+
+      showStatus(pageStatus, error.message || 'Не удалось загрузить историю счета.', 'error');
+    } finally {
+      setLoading(spin, false);
+    }
+  }
+
+  const balanceCard = createSectionCard({
+    eyebrow: 'Balance chart',
+    title: 'Динамика баланса',
+    description: 'Каждый столбец отражает состояние счета на конец месяца.',
+    className: 'span-6',
+    content: el('div.chart-shell', [balanceCanvas]),
+  });
+
+  const flowCard = createSectionCard({
+    eyebrow: 'Cashflow',
+    title: 'Входящий и исходящий поток',
+    description: 'Сравнение поступлений и списаний по месяцам за последний год.',
+    className: 'span-6',
+    content: el('div.chart-shell', [transCanvas]),
+  });
+
+  const tableCard = createSectionCard({
+    eyebrow: 'Ledger',
+    title: 'История переводов',
+    description: 'Таблица поддерживает поэтапную подгрузку, чтобы не перегружать экран длинной историей.',
+    className: 'span-12',
+    actions: [moreButton],
+    content: el('div.data-table-wrap', [historyTable]),
+  });
+
+  const screen = el('div.history-grid', [
+    el('div.span-12', pageHeader),
+    el('div.span-12', pageStatus),
+    el('div.span-12', spin),
+    balanceCard,
+    flowCard,
+    tableCard,
+  ]);
+
+  await loadHistory();
+
+  return {
+    content: [screen],
+    cleanup() {
+      balanceChart.destroy();
+      transactionChart.destroy();
     },
-  })
-
-  leftcol.append(title, backBut);
-  rightcol.append(number, balanceBlock);
-  blockHead.append(leftcol, rightcol);
-  balanceBlock.append(balance);
-  mainDiv.append(spin, mainBlock)
-  mainBlock.append(balanceDyn, transDyn, transHist);
-  balanceDyn.append(balanceStat);
-  transDyn.append(transStat);
-
-  return [
-    blockHead,
-    mainDiv
-  ]
+  };
 }
